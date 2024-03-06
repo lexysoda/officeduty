@@ -9,6 +9,6 @@ func main() {
 		user{"+1"},
 		user{"+2"},
 	}
-	s := NewSlack(true, r)
+	s := NewSlack(true,"C06LSFGJ0HE", r)
 	s.Start()
 }

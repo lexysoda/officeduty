@@ -16,10 +16,11 @@ import (
 type Slack struct {
 	slackClient  *slack.Client
 	socketClient *socketmode.Client
+	channel      string
 	r            *Rotation
 }
 
-func NewSlack(debug bool, r *Rotation) *Slack {
+func NewSlack(debug bool, channel string, r *Rotation) *Slack {
 	appToken := os.Getenv("APP_TOKEN")
 	botToken := os.Getenv("BOT_TOKEN")
 
@@ -36,7 +37,7 @@ func NewSlack(debug bool, r *Rotation) *Slack {
 		socketmode.OptionLog(log.New(os.Stdout, "socketmode: ", log.Lshortfile|log.LstdFlags)),
 	)
 
-	return &Slack{api, client, r}
+	return &Slack{api, client, channel, r}
 }
 
 func (s *Slack) Start() {
@@ -120,35 +121,35 @@ func (s *Slack) handleSlash(evt *socketmode.Event, client *socketmode.Client) {
 
 	payload := "Error"
 	switch cmd.Command {
-		case "/officeshift":
-			date, err := s.r.NextUserShift("<@"+cmd.UserID+">")
-			if err != nil {
-				payload = "You are currently not in the rotation"
-				break
-			}
-			payload = "Your next shift: " + date.Format("Jan 02")
-		default:
+	case "/officeshift":
+		date, err := s.r.NextUserShift("<@" + cmd.UserID + ">")
+		if err != nil {
+			payload = "You are currently not in the rotation"
+			break
+		}
+		payload = "Your next shift: " + date.Format("Jan 02")
+	default:
 	}
 
 	block := slack.NewTextBlockObject("mrkdwn", payload, false, false)
-	client.Ack(*evt.Request, block)
+	client.Ack(*evt.Request, {})
 }
 
-func (s *Slack) sendEphemeral(m string, channel string, user string) {
-	_, err := s.socketClient.Client.PostEphemeral(channel, user, slack.MsgOptionText(m, false))
+func (s *Slack) SendEphemeral(m string, user string) {
+	_, err := s.socketClient.Client.PostEphemeral(s.channel, user, slack.MsgOptionText(m, false))
 	if err != nil {
 		fmt.Printf("failed posting message: %v", err)
 	}
 }
 
-func (s *Slack) sendMessage(m string, channel string) {
-	_, _, err := s.socketClient.Client.PostMessage(channel, slack.MsgOptionText(m, false))
+func (s *Slack) SendMessage(m string) {
+	_, _, err := s.socketClient.Client.PostMessage(s.channel, slack.MsgOptionText(m, false))
 	if err != nil {
 		fmt.Printf("failed posting message: %v", err)
 	}
 }
 
-func (s *Slack) sendShift(channel string) {
+func (s *Slack) SendShift(start, end string, users []string) {
 	msg :=
 		`🚨*New Office Duty Shift*🚨
 Start: %s    End: %s
@@ -165,16 +166,15 @@ Start: %s    End: %s
 - /nextshift to see your next shift
 - /fullshift to see the full list of upcoming shifts
 `
-	users := s.r.NextShift()
 
 	s.sendMessage(fmt.Sprintf(
 		msg,
-		s.r.start.Format("02.01."),
-		s.r.start.Add(s.r.period).Format("02.01."),
+		start,
+		end,
 		users[0].id,
 		users[1].id,
 		users[2].id,
-	), "C06LSFGJ0HE")
+	))
 }
 
 func (s *Slack) sendFullRotation(channel string) {
