@@ -17,10 +17,9 @@ type Slack struct {
 	slackClient  *slack.Client
 	socketClient *socketmode.Client
 	channel      string
-	r            *Rotation
 }
 
-func NewSlack(debug bool, channel string, r *Rotation) *Slack {
+func New(debug bool, channel string, r *Rotation) *Slack {
 	appToken := os.Getenv("APP_TOKEN")
 	botToken := os.Getenv("BOT_TOKEN")
 
