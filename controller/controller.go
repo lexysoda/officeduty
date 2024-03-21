@@ -1,15 +1,24 @@
-package main
+package controller
+
+import (
+	"github.com/lexysoda/officeduty/slack"
+	"github.com/lexysoda/officeduty/rotation"
+)
 
 type Controller struct {
-	s *Slack
-	r *Rotation
+	s *slack.Slack
+	r *rotation.Rotation
 }
 
-func (c *Controller) handleSlash(args ...string) {
-	if len(args) != 2 {
-		return
-	}
-	id := args[2]
+func New(s *slack.Slack, r *rotation.Rotation) *Controller{
+	return &Controller{s, r}
+}
+
+func (c *Controller) Start() {
+	c.s.Start(c.handleSlash, c.handleMention)
+}
+
+func (c *Controller) handleSlash(id string) {
 	msg := "You are currently not in the rotation"
 	if date, err := c.r.NextUserShift("<@" + id + ">"); err == nil {
 		msg = "Your next shift: " + date.Format("Jan 02")
@@ -42,12 +51,12 @@ func (c *Controller) handleCommand(args ...string) {
 }
 
 func (c *Controller) sendShift() {
-	start := c.r.start.Format("02.01.")
-	end := c.r.start.Add(c.r.period).Format("02.01.")
+	start := c.r.Start.Format("02.01.")
+	end := c.r.Start.Add(c.r.Period).Format("02.01.")
 	users := c.r.NextShift()
 	ids := []string{}
 	for i, u := range users {
-		ids[i] = u.id
+		ids[i] = u.Id
 	}
 
 	c.s.SendShift(start, end, ids)

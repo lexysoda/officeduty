@@ -1,12 +1,10 @@
-package main
+package slack
 
 import (
 	"fmt"
 	"log"
 	"os"
-	"reflect"
 	"strings"
-	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
@@ -19,7 +17,7 @@ type Slack struct {
 	channel      string
 }
 
-func New(debug bool, channel string, r *Rotation) *Slack {
+func New(debug bool, channel string) *Slack {
 	appToken := os.Getenv("APP_TOKEN")
 	botToken := os.Getenv("BOT_TOKEN")
 
@@ -36,102 +34,59 @@ func New(debug bool, channel string, r *Rotation) *Slack {
 		socketmode.OptionLog(log.New(os.Stdout, "socketmode: ", log.Lshortfile|log.LstdFlags)),
 	)
 
-	return &Slack{api, client, channel, r}
+	return &Slack{api, client, channel}
 }
 
-func (s *Slack) Start() {
+func (s *Slack) Start(slash func(string), mention func(...string)) {
 	socketmodeHandler := socketmode.NewSocketmodeHandler(s.socketClient)
+	socketmodeHandler.HandleEvents(slackevents.AppMention, s.handleMention(mention))
+	socketmodeHandler.HandleSlashCommand("/officeshift", s.handleSlash(slash))
 
-	socketmodeHandler.HandleEvents(slackevents.AppMention, s.handleMention)
-	socketmodeHandler.HandleSlashCommand("/officeshift", s.handleSlash)
-	socketmodeHandler.HandleDefault(handleEvents)
-
-	t := time.NewTicker(s.r.period)
-	go func() {
-		for {
-			<-t.C
-			s.r.Rotate()
-			s.sendShift("C06LSFGJ0HE")
-		}
-	}()
+	//t := time.NewTicker(s.r.period)
+	//go func() {
+	//	for {
+	//		<-t.C
+	//		s.r.Rotate()
+	//		s.sendShift("C06LSFGJ0HE")
+	//	}
+	//}()
 
 	socketmodeHandler.RunEventLoop()
 }
 
-func handleEvents(evt *socketmode.Event, client *socketmode.Client) {
-	fmt.Println("middlewareEventsAPI")
-
-	fmt.Println(evt.Type)
-
-	if evt.Type == socketmode.EventTypeErrorBadMessage {
-		fmt.Println(reflect.TypeOf(evt.Data))
-		if inner, ok := evt.Data.(*socketmode.ErrorBadMessage); ok {
-			fmt.Println("HELLLLOOO")
-			fmt.Printf("%+v\n", inner)
-		}
-	}
-
-	eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
-	if !ok {
-		fmt.Printf("Ignored %+v\n", evt)
-		return
-	}
-
-	fmt.Printf("Event received: %+v\n", eventsAPIEvent)
-
-	client.Ack(*evt.Request)
-}
-
-func (s *Slack) handleMention(evt *socketmode.Event, client *socketmode.Client) {
-	eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
-	if !ok {
-		fmt.Printf("Ignored %+v\n", evt)
-		return
-	}
-
-	client.Ack(*evt.Request)
-
-	ev, ok := eventsAPIEvent.InnerEvent.Data.(*slackevents.AppMentionEvent)
-	if !ok {
-		fmt.Printf("Ignored %+v\n", ev)
-		return
-	}
-
-	args := strings.Fields(ev.Text)
-	if len(args) == 3 && args[1] == "add" {
-		err := s.r.AddUser(args[2])
-		if err != nil {
-			s.sendMessage(fmt.Sprintf("%s is already on the list", args[2]), ev.Channel)
+func (s *Slack) handleMention(callback func (...string)) func(*socketmode.Event, *socketmode.Client) {
+	return func(evt *socketmode.Event, client *socketmode.Client) {
+		eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
+		if !ok {
+			fmt.Printf("Ignored %+v\n", evt)
 			return
 		}
-		return
+
+		client.Ack(*evt.Request)
+
+		ev, ok := eventsAPIEvent.InnerEvent.Data.(*slackevents.AppMentionEvent)
+		if !ok {
+			fmt.Printf("Ignored %+v\n", ev)
+			return
+		}
+
+		callback(strings.Fields(ev.Text)...)
 	}
-	s.sendShift(ev.Channel)
 }
 
-func (s *Slack) handleSlash(evt *socketmode.Event, client *socketmode.Client) {
-	cmd, ok := evt.Data.(slack.SlashCommand)
-	if !ok {
-		fmt.Printf("Ignored %+v\n", evt)
-		return
-	}
-
-	client.Debugf("Slash command received: %+v", cmd)
-
-	payload := "Error"
-	switch cmd.Command {
-	case "/officeshift":
-		date, err := s.r.NextUserShift("<@" + cmd.UserID + ">")
-		if err != nil {
-			payload = "You are currently not in the rotation"
-			break
+func (s *Slack) handleSlash(callback func(string)) func(*socketmode.Event, *socketmode.Client) {
+	return func(evt *socketmode.Event, client *socketmode.Client) {
+		cmd, ok := evt.Data.(slack.SlashCommand)
+		if !ok {
+			fmt.Printf("Ignored %+v\n", evt)
+			return
 		}
-		payload = "Your next shift: " + date.Format("Jan 02")
-	default:
-	}
 
-	block := slack.NewTextBlockObject("mrkdwn", payload, false, false)
-	client.Ack(*evt.Request, {})
+		client.Debugf("Slash command received: %+v", cmd)
+
+		client.Ack(*evt.Request)
+		callback(cmd.UserID)
+	}
 }
 
 func (s *Slack) SendEphemeral(m string, user string) {
@@ -166,23 +121,13 @@ Start: %s    End: %s
 - /fullshift to see the full list of upcoming shifts
 `
 
-	s.sendMessage(fmt.Sprintf(
+	s.SendMessage(fmt.Sprintf(
 		msg,
 		start,
 		end,
-		users[0].id,
-		users[1].id,
-		users[2].id,
+		users[0],
+		users[1],
+		users[2],
 	))
 }
 
-func (s *Slack) sendFullRotation(channel string) {
-	var sb strings.Builder
-	for i, u := range s.r.users {
-		if i%3 == 0 {
-			fmt.Fprintf(&sb, "------\n")
-		}
-		fmt.Fprintf(&sb, "%s\n", u.id)
-	}
-	s.sendMessage(sb.String(), channel)
-}
