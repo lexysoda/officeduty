@@ -20,6 +20,7 @@ type Controller struct {
 	r       *rotation.Rotation
 	secret  string
 	channel string
+	*http.ServeMux
 }
 
 func New(r *rotation.Rotation, debug bool) *Controller {
@@ -38,30 +39,36 @@ func New(r *rotation.Rotation, debug bool) *Controller {
 		slack.OptionLog(log.New(os.Stderr, "slack-go/slack: ", log.Lshortfile|log.LstdFlags)),
 	)
 
-	return &Controller{s, r, signingSecret, "C06LSFGJ0HE"}
+	return &Controller{s, r, signingSecret, "C06LSFGJ0HE", http.NewServeMux()}
 }
 
-func (c *Controller) validate(w http.ResponseWriter, r *http.Request) error {
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return err
+func (c *Controller) validate(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			slog.Error("Failed to read body", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		sv, err := slack.NewSecretsVerifier(r.Header, c.secret)
+		if err != nil {
+			slog.Error("Failed to create secrets verifier", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if _, err := sv.Write(body); err != nil {
+			slog.Error("Failed to write hmac", "error", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		if err := sv.Ensure(); err != nil {
+			slog.Error("Failed to validate", "error", err)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		next(w, r)
 	}
-	sv, err := slack.NewSecretsVerifier(r.Header, c.secret)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		return err
-	}
-	if _, err := sv.Write(body); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		return err
-	}
-	if err := sv.Ensure(); err != nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		return err
-	}
-	r.Body = io.NopCloser(strings.NewReader(string(body)))
-	return nil
 }
 
 func (c *Controller) Start() {
